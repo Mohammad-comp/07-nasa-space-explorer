@@ -114,6 +114,7 @@ async function fetchEntries(start, end) {
       if (response.status === 429) {
         throw new Error('NASA’s request limit was reached. Try again later.');
       }
+      if (response.status === 503) throw new Error('This date is not cached. Go online and load it first.');
       if (!response.ok) throw new Error('NASA returned HTTP ' + response.status + '.');
 
       const entry = await response.json();
@@ -152,7 +153,11 @@ dateForm.addEventListener('submit', async (event) => {
   galleryStatus.textContent = 'Loading space photos…';
 
   try {
+    await offlineReady;
     const entries = await fetchEntries(start, end);
+    try {
+      localStorage.setItem('space-explorer-last-range', JSON.stringify({ start, end }));
+    } catch { /* The gallery still works when storage is unavailable. */ }
 
     gallery.replaceChildren(...entries.map(createCard));
     galleryStatus.textContent = entries.length
@@ -164,3 +169,110 @@ dateForm.addEventListener('submit', async (event) => {
     searchButton.disabled = false;
   }
 });
+// PWA: show connectivity changes and register the offline worker.
+const installButton = document.getElementById('installApp');
+const installStatus = document.getElementById('installStatus');
+const notificationButton = document.getElementById('enableNotifications');
+const notificationStatus = document.getElementById('notificationStatus');
+const offlineStatus = document.getElementById('offlineStatus');
+let installEvent;
+
+function updateConnection() {
+  offlineStatus.hidden = navigator.onLine;
+}
+window.addEventListener('online', updateConnection);
+window.addEventListener('offline', updateConnection);
+updateConnection();
+
+const offlineReady = 'serviceWorker' in navigator
+  ? navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+    .then(() => navigator.serviceWorker.ready)
+    .then(async () => {
+      if (!navigator.serviceWorker.controller) {
+        await new Promise(resolve => {
+          navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
+          setTimeout(resolve, 3000);
+        });
+      }
+    })
+    .catch(() => { installStatus.textContent = 'Offline setup failed. Refresh while online to try again.'; })
+  : Promise.resolve();
+
+// Keep the browser's install event until the visitor presses our custom button.
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault();
+  installEvent = event;
+  installButton.hidden = false;
+  installStatus.textContent = 'Install Space Explorer for quick access from your home screen.';
+});
+function showInstalled() {
+  installButton.hidden = true;
+  installStatus.textContent = 'Space Explorer is running as an installed app.';
+}
+if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) {
+  showInstalled();
+}
+window.addEventListener('appinstalled', showInstalled);
+installButton.addEventListener('click', async () => {
+  if (!installEvent) {
+    installStatus.textContent = /iPad|iPhone|iPod/.test(navigator.userAgent)
+      ? 'In Safari, tap Share, then Add to Home Screen, and confirm Add. Open the app from its new home-screen icon.'
+      : 'Use your browser menu to install Space Explorer. If the install option is still loading, wait a moment and press Install app again.';
+    return;
+  }
+  const prompt = installEvent;
+  installEvent = null;
+  await prompt.prompt();
+  const choice = await prompt.userChoice;
+  installStatus.textContent = choice.outcome === 'accepted'
+    ? 'Installation accepted. Open Space Explorer from your apps.'
+    : 'Installation dismissed. You can keep exploring in your browser.';
+});
+
+// Permission is requested only after the visitor explicitly presses this button.
+function updateNotificationButton() {
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+    notificationButton.disabled = true;
+    notificationStatus.textContent = 'Notifications are unavailable here. On iPhone, open the installed home-screen app to try them.';
+  } else if (Notification.permission === 'denied') {
+    notificationButton.disabled = true;
+    notificationStatus.textContent = 'Notifications are blocked. You can change this in your browser site settings.';
+  } else {
+    notificationButton.textContent = Notification.permission === 'granted'
+      ? 'Send test notification' : 'Enable notifications';
+  }
+}
+updateNotificationButton();
+notificationButton.addEventListener('click', async () => {
+  try {
+    const permission = await Notification.requestPermission();
+    updateNotificationButton();
+    if (permission !== 'granted') {
+      notificationStatus.textContent = permission === 'denied'
+        ? 'Notifications are blocked in site settings.' : 'Permission was dismissed. Press Enable notifications to try again.';
+      return;
+    }
+    await offlineReady;
+    const registration = await navigator.serviceWorker.ready;
+    await registration.showNotification('NASA Space Explorer', {
+      body: 'Notifications are enabled. Your next space discovery is waiting!',
+      icon: './img/icon-192.png', tag: 'space-explorer-test',
+    });
+    notificationStatus.textContent = 'Notifications enabled. A test notification was sent.';
+  } catch {
+    notificationStatus.textContent = 'Notifications could not be enabled here. Try the installed app or check browser permissions.';
+  }
+});
+
+// Restore the last searched dates after an offline reload.
+if (!navigator.onLine) {
+  try {
+    const saved = JSON.parse(localStorage.getItem('space-explorer-last-range'));
+    if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved.start) &&
+        /^\d{4}-\d{2}-\d{2}$/.test(saved.end)) {
+      startInput.value = saved.start;
+      endInput.value = saved.end;
+      offlineReady.then(() => dateForm.requestSubmit());
+    }
+  } catch { /* Let the visitor choose a range if there is no saved search. */ }
+}

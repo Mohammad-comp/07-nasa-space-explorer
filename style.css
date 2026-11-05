@@ -182,3 +182,26 @@ dialog::backdrop {
     align-items: stretch;
   }
 }
+
+/* PWA controls follow the existing app colors and layout. */
+.pwa-panel {
+  padding: 14px 16px;
+  border-radius: 5px;
+  background: white;
+}
+.pwa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.pwa-panel p { margin: 8px 0 0; }
+.pwa-panel p:empty { display: none; }
+.offline-status {
+  padding: 10px;
+  border-left: 4px solid #fc3d21;
+  background: #fff1dc;
+  color: #552900;
+}
+@media (display-mode: standalone) {
+  body { padding-top: max(20px, env(safe-area-inset-top)); }
+}
