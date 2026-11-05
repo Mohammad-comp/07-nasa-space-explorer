@@ -95,6 +95,45 @@ function createCard(entry) {
   return card;
 }
 
+async function fetchEntries(start, end) {
+  const dates = [];
+  const day = new Date(start);
+  const lastDay = new Date(end);
+  while (day <= lastDay) {
+    dates.push(day.toISOString().slice(2, 10).replaceAll('-', ''));
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+
+  const entries = [];
+  for (let index = 0; index < dates.length; index += 6) {
+    const batch = await Promise.all(dates.slice(index, index + 6).map(async (date) => {
+      const response = await fetch(proxyUrl + '/' + date, {
+        signal: AbortSignal.timeout(15000),
+      });
+      if (response.status === 404) return null;
+      if (response.status === 429) {
+        throw new Error('NASA’s request limit was reached. Try again later.');
+      }
+      if (!response.ok) throw new Error('NASA returned HTTP ' + response.status + '.');
+
+      const entry = await response.json();
+      if (entry.media_type === 'image' && isWebUrl(entry.hdurl)) {
+        const explanation = new DOMParser().parseFromString(
+          entry.explanation || '', 'text/html'
+        ).body.textContent.trim();
+        return { ...entry, url: entry.hdurl, explanation };
+      }
+      if (entry.media_type === 'video' || entry.media_type === 'iframe') {
+        const url = entry.permalink || entry.url;
+        if (isWebUrl(url)) return { ...entry, url };
+      }
+      return null;
+    }));
+    entries.push(...batch.filter(Boolean));
+  }
+  return entries;
+}
+
 dateForm.addEventListener('submit', async (event) => {
   event.preventDefault();
 
@@ -113,28 +152,7 @@ dateForm.addEventListener('submit', async (event) => {
   galleryStatus.textContent = 'Loading space photos…';
 
   try {
-    const url = new URL(proxyUrl, window.location.href);
-    url.searchParams.set('start_date', start);
-    url.searchParams.set('end_date', end);
-
-    const response = await fetch(url);
-
-    if (response.status === 429) {
-      throw new Error('NASA’s request limit was reached. Try again later.');
-    }
-
-    if (!response.ok) {
-      throw new Error(`The gallery request returned HTTP ${response.status}.`);
-    }
-
-    const data = await response.json();
-    const entries = (Array.isArray(data) ? data : [data]).filter((entry) => {
-      if (entry?.media_type === 'image') {
-        return isWebUrl(entry.url) || isWebUrl(entry.hdurl);
-      }
-
-      return entry?.media_type === 'video' && isWebUrl(entry.url);
-    });
+    const entries = await fetchEntries(start, end);
 
     gallery.replaceChildren(...entries.map(createCard));
     galleryStatus.textContent = entries.length
